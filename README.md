@@ -1,7 +1,7 @@
 # dynamic-leds
-Match cheap LED list strips to the dominant colour of a screen.
+Match cheap LED light strips to the dominant colour of a screen.
 
-This script can be built as a small Windows executable that will update a cheap set of BlueTooth Low Energy controllable LED strips to match the dominant colour on the screen. It can achieve this at ~20 frames a second fairly reliably and includes an automatic restart for when unexpected dropouts occur. There is a [demo recorded here](https://www.youtube.com/watch?v=lnAgft4b0Bs).
+This script can be built as a small Windows executable that will update a cheap set of Bluetooth Low Energy controllable LED strips to match the dominant colour on the screen. It can achieve this at ~20 frames a second fairly reliably and includes an automatic restart for when unexpected dropouts occur. There is a [demo recorded here](https://www.youtube.com/watch?v=lnAgft4b0Bs).
 
 ## Build
 If you check out this source code, ensure you have the Rust tools installed and run `cargo build`. You will probably need to update `peripheral_name` to match your device.
