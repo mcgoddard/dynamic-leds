@@ -1,30 +1,27 @@
 extern crate btleplug;
-extern crate rand;
-extern crate captrs;
-extern crate shuteye;
+extern crate scrap;
 
-use captrs::*;
-use shuteye::sleep;
-use std::time::Duration;
+use scrap::{Capturer, Display};
+use std::io::ErrorKind::WouldBlock;
 
-use btleplug::api::{bleuuid::uuid_from_u16, Central, Peripheral, WriteType};
+use btleplug::api::{Central, Peripheral, WriteType, Characteristic};
 #[cfg(target_os = "linux")]
 use btleplug::bluez::manager::Manager;
 #[cfg(target_os = "macos")]
 use btleplug::corebluetooth::manager::Manager;
 #[cfg(target_os = "windows")]
 use btleplug::winrtble::manager::Manager;
-use rand::{thread_rng, Rng};
 use std::thread;
 use std::time::Duration;
-use std::path;
 use uuid::Uuid;
 
-const LIGHT_CHARACTERISTIC_UUID: Uuid = uuid_from_u16(0xFFE9);
-const PERIPHERAL_NAME = "DesktopLights";
-const DISPLAY_INDEX = 0;
+const SLEEP_TO_FIND_DEVICE_S: u64 = 2;
+const SLEEP_BETWEEN_UPDATES_MS: u64 = 30;
+const SLEEP_WAIT_FOR_FRAMES_MS: u64 = 10;
 
-fn find_light() {
+fn find_light() -> (btleplug::winrtble::peripheral::Peripheral, Characteristic) {
+    let light_characteristic_uuid: Uuid = Uuid::parse_str("00010203-0405-0607-0809-0A0B0C0D2B11").unwrap();
+    let peripheral_name: String = "ihoment_H6181_9F87".to_string();
     let manager = Manager::new().unwrap();
 
     // get the first bluetooth adapter
@@ -32,14 +29,14 @@ fn find_light() {
         .adapters()
         .expect("Unable to fetch adapter list.")
         .into_iter()
-        .nth(0)
+        .next()
         .expect("Unable to find adapters.");
 
     // start scanning for devices
     central.start_scan().unwrap();
     // instead of waiting, you can use central.event_receiver() to get a channel
     // to listen for notifications on.
-    thread::sleep(Duration::from_secs(2));
+    thread::sleep(Duration::from_secs(SLEEP_TO_FIND_DEVICE_S));
 
     // find the device we're interested in
     let light = central
@@ -49,7 +46,7 @@ fn find_light() {
             p.properties()
                 .local_name
                 .iter()
-                .any(|name| name.contains(PERIPHERAL_NAME))
+                .any(|name| name.contains(&peripheral_name))
         })
         .expect("No lights found");
 
@@ -57,57 +54,71 @@ fn find_light() {
     light.connect().unwrap();
 
     // discover characteristics
-    light.discover_characteristics().unwrap();
+    let chars = light.discover_characteristics().unwrap();
 
     // find the characteristic we want
-    let chars = light.characteristics();
-    let cmd_char = chars
+    let command_characteristic = chars
         .iter()
-        .find(|c| c.uuid == LIGHT_CHARACTERISTIC_UUID)
+        .find(|c| c.uuid == light_characteristic_uuid)
         .expect("Unable to find characterics");
 
-    return light, command_characteristic;
+    (light, command_characteristic.clone())
+}
+
+fn send_color(light: &btleplug::winrtble::peripheral::Peripheral, command_characteristic: &Characteristic, red: u8, green: u8, blue: u8) {
+    let mut color_cmd = vec![
+        // command delimiter
+        0x33,
+        // change colour
+        0x05,
+        // manual mode
+        0x02,
+        // red
+        red,
+        // green
+        green,
+        //blue
+        blue,
+        // padding
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // crc (will be calculated and overwritten)
+        0x00
+    ];
+    let check = color_cmd.iter().fold(0_u8, |acc, x| acc ^ x);
+    color_cmd[19] = check;
+    light.write(&command_characteristic, &color_cmd, WriteType::WithoutResponse).unwrap();
 }
 
 pub fn main() {
-    const light, command_characteristic = find_light();
+    let (light, command_characteristic) = find_light();
 
-    let mut capturer = Capturer::new(DISPLAY_INDEX).unwrap();
-
-    let (w, h) = capturer.geometry();
-    let size = w as u64 * h as u64;
+    let display = Display::primary().expect("Couldn't find primary display.");
+    let mut capturer = Capturer::new(display).expect("Couldn't begin capture.");
+    let (w, h) = (capturer.width(), capturer.height());
     println!("Display size: {:?}x{:?}", w, h);
 
-    //loop {
-    // Capture screen
-    let ps = capturer.capture_frame().unwrap();
+    loop {
+        // Capture screen
+        let buffer = match capturer.frame() {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                if error.kind() == WouldBlock {
+                    // No frame ready, keep spinning
+                    thread::sleep(Duration::from_millis(SLEEP_WAIT_FOR_FRAMES_MS));
+                    continue;
+                } else {
+                    panic!("Error: {}", error);
+                }
+            }
+        };
 
-    let (mut tot_r, mut tot_g, mut tot_b) = (0, 0, 0);
+        // Get dominant colour
+        let colours = dominant_color::get_colors(&buffer, false);
 
-    for Bgr8 { r, g, b, .. } in ps.into_iter() {
-        tot_r += r as u64;
-        tot_g += g as u64;
-        tot_b += b as u64;
+        // Write to BLE
+        send_color(&light, &command_characteristic, colours[2], colours[1], colours[0]);
+
+        // Sleep before next frame
+        thread::sleep(Duration::from_millis(SLEEP_BETWEEN_UPDATES_MS));
     }
-
-    // Get dominant colour
-    let image = image::open(&path::Path::new("./docs/Fotolia_45549559_320_480.jpg")).unwrap();
-    let has_alpha = match image.color() {
-        image::ColorType::Rgba8 => true,
-        image::ColorType::Bgra8 => true,
-        _ => false,
-    };
-    let colors = dominant_color::get_colors(&image.to_bytes(), has_alpha);
-    println!("has_alpha: {}, colors: {:?}", has_alpha, colors);
-
-    // Write to BLE
-    let color_cmd = vec![0x56, rng.gen(), rng.gen(), rng.gen(), 0x00, 0xF0, 0xAA];
-    light
-        .write(&cmd_char, &color_cmd, WriteType::WithoutResponse)
-        .unwrap();
-    thread::sleep(Duration::from_millis(200));
-
-    // Sleep before next frame
-    //sleep(Duration::from_millis(80));
-    //}
 }
