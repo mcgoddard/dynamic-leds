@@ -19,6 +19,7 @@ use uuid::Uuid;
 const SLEEP_TO_FIND_DEVICE_S: u64 = 1;
 const SLEEP_BETWEEN_UPDATES_MS: u64 = 30;
 const SLEEP_WAIT_FOR_FRAMES_MS: u64 = 10;
+const COLOUR_SEND_THRESHOLD: u8 = 2;
 
 fn find_light() -> (btleplug::winrtble::peripheral::Peripheral, Characteristic) {
     let light_characteristic_uuid: Uuid = Uuid::parse_str("00010203-0405-0607-0809-0A0B0C0D2B11").unwrap();
@@ -90,6 +91,11 @@ fn send_color(light: &btleplug::winrtble::peripheral::Peripheral, command_charac
     light.write(&command_characteristic, &color_cmd, WriteType::WithoutResponse).unwrap();
 }
 
+fn colour_difference(colour_1: u8, colour_2: u8) -> bool {
+    (colour_1 >= colour_2 && colour_1 > colour_2 + COLOUR_SEND_THRESHOLD) ||
+        (colour_1 < colour_2 && colour_1 < colour_2 - COLOUR_SEND_THRESHOLD)
+}
+
 fn update_lights() {
     let (light, command_characteristic) = find_light();
     println!("Connected");
@@ -98,6 +104,8 @@ fn update_lights() {
     let mut capturer = Capturer::new(display).expect("Couldn't begin capture.");
     let (w, h) = (capturer.width(), capturer.height());
     println!("Display size: {:?}x{:?}", w, h);
+
+    let (mut last_red, mut last_green, mut last_blue) = (0_u8, 0_u8, 0_u8);
 
     loop {
         // Capture screen
@@ -118,7 +126,14 @@ fn update_lights() {
         let colours = dominant_color::get_colors(&buffer, false);
 
         // Write to BLE
-        send_color(&light, &command_characteristic, colours[2], colours[1], colours[0]);
+        if colour_difference(last_red, colours[2]) ||
+            colour_difference(last_green, colours[1]) ||
+            colour_difference(last_blue, colours[0]) {
+            send_color(&light, &command_characteristic, colours[2], colours[1], colours[0]);
+            last_red = colours[2];
+            last_green = colours[1];
+            last_blue = colours[0];
+        }
 
         // Sleep before next frame
         thread::sleep(Duration::from_millis(SLEEP_BETWEEN_UPDATES_MS));
