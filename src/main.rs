@@ -1,9 +1,12 @@
 extern crate btleplug;
 extern crate scrap;
 
-use scrap::{Capturer, Display};
 use std::io::ErrorKind::WouldBlock;
+use std::thread;
+use std::time::Duration;
+use std::panic;
 
+use scrap::{Capturer, Display};
 use btleplug::api::{Central, Peripheral, WriteType, Characteristic};
 #[cfg(target_os = "linux")]
 use btleplug::bluez::manager::Manager;
@@ -11,11 +14,9 @@ use btleplug::bluez::manager::Manager;
 use btleplug::corebluetooth::manager::Manager;
 #[cfg(target_os = "windows")]
 use btleplug::winrtble::manager::Manager;
-use std::thread;
-use std::time::Duration;
 use uuid::Uuid;
 
-const SLEEP_TO_FIND_DEVICE_S: u64 = 2;
+const SLEEP_TO_FIND_DEVICE_S: u64 = 1;
 const SLEEP_BETWEEN_UPDATES_MS: u64 = 30;
 const SLEEP_WAIT_FOR_FRAMES_MS: u64 = 10;
 
@@ -89,8 +90,9 @@ fn send_color(light: &btleplug::winrtble::peripheral::Peripheral, command_charac
     light.write(&command_characteristic, &color_cmd, WriteType::WithoutResponse).unwrap();
 }
 
-pub fn main() {
+fn update_lights() {
     let (light, command_characteristic) = find_light();
+    println!("Connected");
 
     let display = Display::primary().expect("Couldn't find primary display.");
     let mut capturer = Capturer::new(display).expect("Couldn't begin capture.");
@@ -120,5 +122,21 @@ pub fn main() {
 
         // Sleep before next frame
         thread::sleep(Duration::from_millis(SLEEP_BETWEEN_UPDATES_MS));
+    }
+}
+
+pub fn main() {
+    loop {
+        match panic::catch_unwind(|| {
+            update_lights();
+        }) {
+            Ok(_) => {
+                println!("Exiting");
+                break;
+            },
+            Err(_) => {
+                println!("Caught panic, restarting");
+            }
+        };
     }
 }
